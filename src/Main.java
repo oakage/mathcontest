@@ -3,102 +3,103 @@ import java.io.*;
 import java.util.*;
 class chatapp
 {
-    private static final String TERMINATE = "Exit";
-    static String name;
-    static String message;
-    static volatile boolean finished = false;
-    public static void main(String[] args)
-    {
-        if (args.length != 2)
-            System.out.println("Two arguments required: <multicast-host> <port-number>");
-        else
-        {
-            try
-            {
-                InetAddress group = InetAddress.getByName(args[0]);
-                int port = Integer.parseInt(args[1]);
-                Scanner sc = new Scanner(System.in);
-                System.out.print("Enter your name: ");
-                name = sc.nextLine();
-                MulticastSocket socket = new MulticastSocket(port);
+    private static final String host = "localhost";
+    private static final int portNumber = 4444;
 
-                // Since we are deploying
-                socket.setTimeToLive(0);
-                //this on localhost only (For a subnet set it as 1)
+    private String userName;
+    private String serverHost;
+    private int serverPort;
+    private Scanner userInputScanner;
 
-                socket.joinGroup(group);
-                Thread t = new Thread(new
-                        ReadThread(socket,group,port));
+    public static void main(String[] args){
+        String readName = null;
+        Scanner scan = new Scanner(System.in);
+        System.out.println("Please input username:");
+        while(readName == null || readName.trim().equals("")){
+            // null, empty, whitespace(s) not allowed.
+            readName = scan.nextLine();
+            if(readName.trim().equals("")){
+                System.out.println("Invalid. Please enter again:");
+            }
+        }
 
-                // Spawn a thread for reading messages
-                t.start();
+        chatapp client = new chatapp(readName, host, portNumber);
+        client.startClient(scan);
+    }
 
-                // sent to the current group
-                System.out.println("Start typing messages...\n");
-                while(true)
-                {
-                    message = sc.nextLine();
-                    if(message.equalsIgnoreCase(chatapp.TERMINATE))
-                    {
-                        finished = true;
-                        socket.leaveGroup(group);
-                        socket.close();
-                        break;
-                    }
-                    message = name + ": " + message;
-                    byte[] buffer = message.getBytes();
-                    DatagramPacket datagram = new
-                            DatagramPacket(buffer,buffer.length,group,port);
-                    socket.send(datagram);
+    private chatapp(String userName, String host, int portNumber){
+        this.userName = userName;
+        this.serverHost = host;
+        this.serverPort = portNumber;
+    }
+
+    private void startClient(Scanner scan){
+        try{
+            Socket socket = new Socket(serverHost, serverPort);
+            Thread.sleep(1000); // waiting for network communicating.
+
+            ServerThread serverThread = new ServerThread(socket, userName);
+            Thread serverAccessThread = new Thread(serverThread);
+            serverAccessThread.start();
+            while(serverAccessThread.isAlive()){
+                if(scan.hasNextLine()){
+                    serverThread.addNextMessage(scan.nextLine());
                 }
+                // NOTE: scan.hasNextLine waits input (in the other words block this thread's process).
+                // NOTE: If you use buffered reader or something else not waiting way,
+                // NOTE: I recommends write waiting short time like following.
+                // else {
+                //    Thread.sleep(200);
+                // }
             }
-            catch(SocketException se)
-            {
-                System.out.println("Error creating socket");
-                se.printStackTrace();
-            }
-            catch(IOException ie)
-            {
-                System.out.println("Error reading/writing from/to socket");
-                ie.printStackTrace();
-            }
+        }catch(IOException ex){
+            System.err.println("Fatal Connection error!");
+            ex.printStackTrace();
+        }catch(InterruptedException ex){
+            System.out.println("Interrupted");
         }
     }
 }
 class ReadThread implements Runnable
 {
-    private MulticastSocket socket;
-    private InetAddress group;
-    private int port;
-    private static final int MAX_LEN = 1000;
-    ReadThread(MulticastSocket socket,InetAddress group,int port)
-    {
+    private Socket socket;
+    private PrintWriter clientOut;
+    private Server server;
+
+    public ReadThread(Server server, Socket socket){
+        this.server = server;
         this.socket = socket;
-        this.group = group;
-        this.port = port;
+    }
+
+    private PrintWriter getWriter(){
+        return clientOut;
     }
 
     @Override
-    public void run()
-    {
-        while(!chatapp.finished)
-        {
-            byte[] buffer = new byte[ReadThread.MAX_LEN];
-            DatagramPacket datagram = new
-                    DatagramPacket(buffer,buffer.length,group,port);
-            String message;
-            try
-            {
-                socket.receive(datagram);
-                message = new
-                        String(buffer,0,datagram.getLength(),"UTF-8");
-                if(!message.startsWith(chatapp.name))
-                    System.out.println(message);
+    public void run() {
+        try{
+            // setup
+            this.clientOut = new PrintWriter(socket.getOutputStream(), false);
+            Scanner in = new Scanner(socket.getInputStream());
+
+            // start communicating
+            while(!socket.isClosed()){
+                if(in.hasNextLine()){
+                    String input = in.nextLine();
+                    // NOTE: if you want to check server can read input, uncomment next line and check server file console.
+                    // System.out.println(input);
+                    for(ReadThread thatClient : server.getClients()){
+                        PrintWriter thatClientOut = thatClient.getWriter();
+                        if(thatClientOut != null){
+                            thatClientOut.write(input + "\r\n");
+                            thatClientOut.flush();
+                        }
+                    }
+                }
             }
-            catch(IOException e)
-            {
-                System.out.println("Socket closed!");
-            }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 }
+
